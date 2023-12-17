@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ipfs/go-ipfs/core/commands/cmdenv"
+	"github.com/ipfs/kubo/core/commands/cmdenv"
+	"github.com/ipfs/kubo/core/commands/cmdutils"
 
 	cid "github.com/ipfs/go-cid"
 	cidenc "github.com/ipfs/go-cidutil/cidenc"
@@ -16,9 +17,10 @@ import (
 )
 
 const (
+	pinRootsOptionName = "pin-roots"
 	progressOptionName = "progress"
 	silentOptionName   = "silent"
-	pinRootsOptionName = "pin-roots"
+	statsOptionName    = "stats"
 )
 
 // DagCmd provides a subset of commands for interacting with ipld dag objects
@@ -28,9 +30,9 @@ var DagCmd = &cmds.Command{
 		ShortDescription: `
 'ipfs dag' is used for creating and manipulating DAG objects/hierarchies.
 
-This subcommand is currently an experimental feature, but it is intended
-to deprecate and replace the existing 'ipfs object' command moving forward.
-		`,
+This subcommand is intended to deprecate and replace
+the existing 'ipfs object' command moving forward.
+`,
 	},
 	Subcommands: map[string]*cmds.Command{
 		"put":     DagPutCmd,
@@ -53,9 +55,15 @@ type ResolveOutput struct {
 	RemPath string
 }
 
+type CarImportStats struct {
+	BlockCount      uint64
+	BlockBytesCount uint64
+}
+
 // CarImportOutput is the output type of the 'dag import' commands
 type CarImportOutput struct {
-	Root RootMeta
+	Root  *RootMeta       `json:",omitempty"`
+	Stats *CarImportStats `json:",omitempty"`
 }
 
 // RootMeta is the metadata for a root pinning response
@@ -77,10 +85,11 @@ into an object of the specified format.
 		cmds.FileArg("object data", true, true, "The object to put").EnableStdin(),
 	},
 	Options: []cmds.Option{
-		cmds.StringOption("format", "f", "Format that the object will be added as.").WithDefault("cbor"),
-		cmds.StringOption("input-enc", "Format that the input object will be.").WithDefault("json"),
+		cmds.StringOption("store-codec", "Codec that the stored object will be encoded with").WithDefault("dag-cbor"),
+		cmds.StringOption("input-codec", "Codec that the input object is encoded in").WithDefault("dag-json"),
 		cmds.BoolOption("pin", "Pin this object when adding."),
-		cmds.StringOption("hash", "Hash function to use").WithDefault(""),
+		cmds.StringOption("hash", "Hash function to use").WithDefault("sha2-256"),
+		cmdutils.AllowBigBlockOption,
 	},
 	Run:  dagPut,
 	Type: OutputObject{},
@@ -107,6 +116,9 @@ format.
 	},
 	Arguments: []cmds.Argument{
 		cmds.StringArg("ref", true, false, "The object to get").EnableStdin(),
+	},
+	Options: []cmds.Option{
+		cmds.StringOption("output-codec", "Format that the object will be encoded as.").WithDefault("dag-json"),
 	},
 	Run: dagGet,
 }
@@ -157,8 +169,10 @@ var DagResolveCmd = &cmds.Command{
 }
 
 type importResult struct {
-	roots map[cid.Cid]struct{}
-	err   error
+	blockCount      uint64
+	blockBytesCount uint64
+	roots           map[cid.Cid]struct{}
+	err             error
 }
 
 // DagImportCmd is a command for importing a car to ipfs
@@ -183,15 +197,18 @@ Note:
   currently present in the blockstore does not represent a complete DAG,
   pinning of that individual root will fail.
 
-Maximum supported CAR version: 1
+Maximum supported CAR version: 2
+Specification of CAR formats: https://ipld.io/specs/transport/car/
 `,
 	},
 	Arguments: []cmds.Argument{
 		cmds.FileArg("path", true, true, "The path of a .car file.").EnableStdin(),
 	},
 	Options: []cmds.Option{
-		cmds.BoolOption(silentOptionName, "No output."),
 		cmds.BoolOption(pinRootsOptionName, "Pin optional roots listed in the .car headers after importing.").WithDefault(true),
+		cmds.BoolOption(silentOptionName, "No output."),
+		cmds.BoolOption(statsOptionName, "Output stats."),
+		cmdutils.AllowBigBlockOption,
 	},
 	Type: CarImportOutput{},
 	Run:  dagImport,
@@ -201,6 +218,22 @@ Maximum supported CAR version: 1
 			silent, _ := req.Options[silentOptionName].(bool)
 			if silent {
 				return nil
+			}
+
+			// event should have only one of `Root` or `Stats` set, not both
+			if event.Root == nil {
+				if event.Stats == nil {
+					return fmt.Errorf("unexpected message from DAG import")
+				}
+				stats, _ := req.Options[statsOptionName].(bool)
+				if stats {
+					fmt.Fprintf(w, "Imported %d blocks (%d bytes)\n", event.Stats.BlockCount, event.Stats.BlockBytesCount)
+				}
+				return nil
+			}
+
+			if event.Stats != nil {
+				return fmt.Errorf("unexpected message from DAG import")
 			}
 
 			enc, err := cmdenv.GetLowLevelCidEncoder(req)
@@ -233,6 +266,7 @@ var DagExportCmd = &cmds.Command{
 'ipfs dag export' fetches a DAG and streams it out as a well-formed .car file.
 Note that at present only single root selections / .car files are supported.
 The output of blocks happens in strict DAG-traversal, first-seen, order.
+CAR file follows the CARv1 format: https://ipld.io/specs/transport/car/carv1/
 `,
 	},
 	Arguments: []cmds.Argument{

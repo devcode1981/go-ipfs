@@ -98,6 +98,7 @@ test "$TEST_NO_PLUGIN" != 1 && test "$TEST_OS" = "LINUX" && test_set_prereq PLUG
 
 # this may not be available, skip a few dependent tests
 type socat >/dev/null 2>&1 && test_set_prereq SOCAT
+type unzip >/dev/null 2>&1 && test_set_prereq UNZIP
 
 
 # Set a prereq as error messages are often different on Windows/Cygwin
@@ -268,7 +269,7 @@ test_launch_ipfs_daemon() {
 
   # wait for api file to show up
   test_expect_success "api file shows up" '
-    test_wait_for_file 50 100ms "$IPFS_PATH/api"
+    test_wait_for_file 50 200ms "$IPFS_PATH/api"
   '
 
   test_set_address_vars actual_daemon
@@ -280,9 +281,13 @@ test_launch_ipfs_daemon() {
   '
 }
 
+test_launch_ipfs_daemon_without_network() {
+  test_launch_ipfs_daemon --offline "$@"
+}
+
 do_umount() {
   if [ "$(uname -s)" = "Linux" ]; then
-  fusermount -u "$1"
+  fusermount -z -u "$1"
   else
   umount "$1"
   fi
@@ -379,6 +384,15 @@ test_should_contain() {
   then
     echo "'$2' does not contain '$1', it contains:"
     cat "$2"
+    return 1
+  fi
+}
+
+test_should_not_contain() {
+  test "$#" = 2 || error "bug in the test script: not 2 parameters to test_should_not_contain"
+  if grep -q "$1" "$2"
+  then
+    echo "'$2' contains undesired value '$1'"
     return 1
   fi
 }
@@ -515,3 +529,16 @@ findprovs_expect() {
     test_cmp findprovsOut expected
   '
 }
+
+purge_blockstore() {
+  ipfs pin ls --quiet --type=recursive | ipfs pin rm &>/dev/null
+  ipfs repo gc --silent &>/dev/null
+
+  test_expect_success "pinlist empty" '
+    [[ -z "$( ipfs pin ls )" ]]
+  '
+  test_expect_success "nothing left to gc" '
+    [[ -z "$( ipfs repo gc )" ]]
+  '
+}
+

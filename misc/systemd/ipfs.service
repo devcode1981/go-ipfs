@@ -1,6 +1,6 @@
 # This file will be overwritten on package upgrades, avoid customizations here.
 #
-# To make persistant changes, create file in 
+# To make persistent changes, create file in 
 # "/etc/systemd/system/ipfs.service.d/overwrite.conf" with 
 # `systemctl edit ipfs.service`. This file will be parsed after this 
 # file has been parsed.
@@ -14,7 +14,7 @@
 
 [Unit]
 Description=InterPlanetary File System (IPFS) daemon
-Documentation=https://docs.ipfs.io/
+Documentation=https://docs.ipfs.tech/
 After=network.target
 
 [Service]

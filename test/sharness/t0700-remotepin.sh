@@ -4,9 +4,9 @@ test_description="Test ipfs remote pinning operations"
 
 . lib/test-lib.sh
 
-if [ -z ${DOCKER_HOST+x} ]; then
+if [ -z ${TEST_DOCKER_HOST+x} ]; then
   # TODO: set up instead of skipping?
-  skip_all='Skipping pinning service integration tests: missing DOCKER_HOST, remote pinning service not available'
+  skip_all='Skipping pinning service integration tests: missing TEST_DOCKER_HOST, remote pinning service not available'
   test_done
 fi
 
@@ -15,7 +15,7 @@ test_init_ipfs
 test_launch_ipfs_daemon
 
 # create user on pinning service
-TEST_PIN_SVC="http://${DOCKER_HOST}:5000/api/v1"
+TEST_PIN_SVC="http://${TEST_DOCKER_HOST}:5000/api/v1"
 TEST_PIN_SVC_KEY=$(curl -s -X POST "$TEST_PIN_SVC/users" -d email="go-ipfs-sharness@ipfs.example.com" | jq --raw-output .access_token)
 
 # pin remote service  add|ls|rm
@@ -319,6 +319,14 @@ test_remote_pins() {
 test_remote_pins ""
 
 test_kill_ipfs_daemon
+
+WARNINGMESSAGE="WARNING: the local node is offline and remote pinning may fail if there is no other provider for this CID"
+
+test_expect_success "'ipfs pin remote add' shows the warning message while offline" '
+  test_expect_code 0 ipfs pin remote add --service=test_pin_svc --background $BASE_ARGS --name=name_a  $HASH_A > actual &&
+  test_expect_code 0 grep -q "$WARNINGMESSAGE" actual
+'
+
 test_done
 
 # vim: ts=2 sw=2 sts=2 et:

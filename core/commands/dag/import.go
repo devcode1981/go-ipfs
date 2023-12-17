@@ -7,13 +7,15 @@ import (
 
 	cid "github.com/ipfs/go-cid"
 	files "github.com/ipfs/go-ipfs-files"
-	"github.com/ipfs/go-ipfs/core/commands/cmdenv"
 	ipld "github.com/ipfs/go-ipld-format"
+	ipldlegacy "github.com/ipfs/go-ipld-legacy"
 	iface "github.com/ipfs/interface-go-ipfs-core"
 	"github.com/ipfs/interface-go-ipfs-core/options"
+	"github.com/ipfs/kubo/core/commands/cmdenv"
+	"github.com/ipfs/kubo/core/commands/cmdutils"
 
 	cmds "github.com/ipfs/go-ipfs-cmds"
-	gocar "github.com/ipld/go-car"
+	gocarv2 "github.com/ipld/go-car/v2"
 )
 
 func dagImport(req *cmds.Request, res cmds.ResponseEmitter, env cmds.Environment) error {
@@ -42,8 +44,8 @@ func dagImport(req *cmds.Request, res cmds.ResponseEmitter, env cmds.Environment
 	// This is especially important for use cases like dagger:
 	//    ipfs dag import $( ... | ipfs-dagger --stdout=carfifos )
 	//
-	unlocker := node.Blockstore.PinLock()
-	defer unlocker.Unlock()
+	unlocker := node.Blockstore.PinLock(req.Context)
+	defer unlocker.Unlock(req.Context)
 
 	doPinRoots, _ := req.Options[pinRootsOptionName].(bool)
 
@@ -87,9 +89,9 @@ func dagImport(req *cmds.Request, res cmds.ResponseEmitter, env cmds.Environment
 
 			ret := RootMeta{Cid: c}
 
-			if block, err := node.Blockstore.Get(c); err != nil {
+			if block, err := node.Blockstore.Get(req.Context, c); err != nil {
 				ret.PinErrorMsg = err.Error()
-			} else if nd, err := ipld.Decode(block); err != nil {
+			} else if nd, err := ipldlegacy.DecodeNode(req.Context, block); err != nil {
 				ret.PinErrorMsg = err.Error()
 			} else if err := node.Pinning.Pin(req.Context, nd, true); err != nil {
 				ret.PinErrorMsg = err.Error()
@@ -101,7 +103,7 @@ func dagImport(req *cmds.Request, res cmds.ResponseEmitter, env cmds.Environment
 				failedPins++
 			}
 
-			if err := res.Emit(&CarImportOutput{Root: ret}); err != nil {
+			if err := res.Emit(&CarImportOutput{Root: &ret}); err != nil {
 				return err
 			}
 		}
@@ -112,6 +114,19 @@ func dagImport(req *cmds.Request, res cmds.ResponseEmitter, env cmds.Environment
 				failedPins,
 				len(roots),
 			)
+		}
+	}
+
+	stats, _ := req.Options[statsOptionName].(bool)
+	if stats {
+		err = res.Emit(&CarImportOutput{
+			Stats: &CarImportStats{
+				BlockCount:      done.blockCount,
+				BlockBytesCount: done.blockBytesCount,
+			},
+		})
+		if err != nil {
+			return err
 		}
 	}
 
@@ -126,6 +141,7 @@ func importWorker(req *cmds.Request, re cmds.ResponseEmitter, api iface.CoreAPI,
 	batch := ipld.NewBatch(req.Context, api.Dag())
 
 	roots := make(map[cid.Cid]struct{})
+	var blockCount, blockBytesCount uint64
 
 	it := req.Files.Entries()
 	for it.Next() {
@@ -145,17 +161,12 @@ func importWorker(req *cmds.Request, re cmds.ResponseEmitter, api iface.CoreAPI,
 		err := func() error {
 			defer file.Close()
 
-			car, err := gocar.NewCarReader(file)
+			car, err := gocarv2.NewBlockReader(file)
 			if err != nil {
 				return err
 			}
 
-			// Be explicit here, until the spec is finished
-			if car.Header.Version != 1 {
-				return errors.New("only car files version 1 supported at present")
-			}
-
-			for _, c := range car.Header.Roots {
+			for _, c := range car.Roots {
 				roots[c] = struct{}{}
 			}
 
@@ -166,9 +177,12 @@ func importWorker(req *cmds.Request, re cmds.ResponseEmitter, api iface.CoreAPI,
 				} else if block == nil {
 					break
 				}
+				if err := cmdutils.CheckBlockSize(req, uint64(len(block.RawData()))); err != nil {
+					return err
+				}
 
 				// the double-decode is suboptimal, but we need it for batching
-				nd, err := ipld.Decode(block)
+				nd, err := ipldlegacy.DecodeNode(req.Context, block)
 				if err != nil {
 					return err
 				}
@@ -176,6 +190,8 @@ func importWorker(req *cmds.Request, re cmds.ResponseEmitter, api iface.CoreAPI,
 				if err := batch.Add(req.Context, nd); err != nil {
 					return err
 				}
+				blockCount++
+				blockBytesCount += uint64(len(block.RawData()))
 			}
 
 			return nil
@@ -197,5 +213,8 @@ func importWorker(req *cmds.Request, re cmds.ResponseEmitter, api iface.CoreAPI,
 		return
 	}
 
-	ret <- importResult{roots: roots}
+	ret <- importResult{
+		blockCount:      blockCount,
+		blockBytesCount: blockBytesCount,
+		roots:           roots}
 }

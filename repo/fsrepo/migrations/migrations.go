@@ -2,15 +2,19 @@ package migrations
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
 	"runtime"
 	"strings"
 	"sync"
+
+	config "github.com/ipfs/kubo/config"
 )
 
 const (
@@ -58,7 +62,7 @@ func RunMigration(ctx context.Context, fetcher Fetcher, targetVer int, ipfsDir s
 
 		logger.Println("Need", len(missing), "migrations, downloading.")
 
-		tmpDir, err := ioutil.TempDir("", "migrations")
+		tmpDir, err := os.MkdirTemp("", "migrations")
 		if err != nil {
 			return err
 		}
@@ -105,6 +109,90 @@ func ExeName(name string) string {
 		return name + ".exe"
 	}
 	return name
+}
+
+// ReadMigrationConfig reads the Migration section of the IPFS config, avoiding
+// reading anything other than the Migration section. That way, we're free to
+// make arbitrary changes to all _other_ sections in migrations.
+func ReadMigrationConfig(repoRoot string, userConfigFile string) (*config.Migration, error) {
+	var cfg struct {
+		Migration config.Migration
+	}
+
+	cfgPath, err := config.Filename(repoRoot, userConfigFile)
+	if err != nil {
+		return nil, err
+	}
+
+	cfgFile, err := os.Open(cfgPath)
+	if err != nil {
+		return nil, err
+	}
+	defer cfgFile.Close()
+
+	err = json.NewDecoder(cfgFile).Decode(&cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	switch cfg.Migration.Keep {
+	case "":
+		cfg.Migration.Keep = config.DefaultMigrationKeep
+	case "discard", "cache", "keep":
+	default:
+		return nil, errors.New("unknown config value, Migrations.Keep must be 'cache', 'pin', or 'discard'")
+	}
+
+	if len(cfg.Migration.DownloadSources) == 0 {
+		cfg.Migration.DownloadSources = config.DefaultMigrationDownloadSources
+	}
+
+	return &cfg.Migration, nil
+}
+
+// GetMigrationFetcher creates one or more fetchers according to
+// downloadSources,
+func GetMigrationFetcher(downloadSources []string, distPath string, newIpfsFetcher func(string) Fetcher) (Fetcher, error) {
+	const httpUserAgent = "go-ipfs"
+	const numTriesPerHTTP = 3
+
+	var fetchers []Fetcher
+	for _, src := range downloadSources {
+		src := strings.TrimSpace(src)
+		switch src {
+		case "HTTPS", "https", "HTTP", "http":
+			fetchers = append(fetchers, &RetryFetcher{NewHttpFetcher(distPath, "", httpUserAgent, 0), numTriesPerHTTP})
+		case "IPFS", "ipfs":
+			if newIpfsFetcher != nil {
+				fetchers = append(fetchers, newIpfsFetcher(distPath))
+			}
+		case "":
+			// Ignore empty string
+		default:
+			u, err := url.Parse(src)
+			if err != nil {
+				return nil, fmt.Errorf("bad gateway address: %s", err)
+			}
+			switch u.Scheme {
+			case "":
+				u.Scheme = "https"
+			case "https", "http":
+			default:
+				return nil, errors.New("bad gateway address: url scheme must be http or https")
+			}
+			fetchers = append(fetchers, &RetryFetcher{NewHttpFetcher(distPath, u.String(), httpUserAgent, 0), numTriesPerHTTP})
+		}
+	}
+
+	switch len(fetchers) {
+	case 0:
+		return nil, errors.New("no sources specified")
+	case 1:
+		return fetchers[0], nil
+	}
+
+	// Wrap fetchers in a MultiFetcher to try them in order
+	return NewMultiFetcher(fetchers...), nil
 }
 
 func migrationName(from, to int) string {

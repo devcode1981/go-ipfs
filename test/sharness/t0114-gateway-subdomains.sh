@@ -89,7 +89,7 @@ test_expect_success "ipfs init" '
   ipfs init --profile=test > /dev/null
 '
 
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 # CIDv0to1 is necessary because raw-leaves are enabled by default during
 # "ipfs add" with CIDv1 and disabled with CIDv0
@@ -116,7 +116,7 @@ test_expect_success "Add the test directory" '
 test_expect_success "Publish test text file to IPNS using RSA keys" '
   RSA_KEY=$(ipfs key gen --ipns-base=b58mh --type=rsa --size=2048 test_key_rsa | head -n1 | tr -d "\n")
   RSA_IPNS_IDv0=$(echo "$RSA_KEY" | ipfs cid format -v 0)
-  RSA_IPNS_IDv1=$(echo "$RSA_KEY" | ipfs cid format -v 1 --codec libp2p-key -b base36)
+  RSA_IPNS_IDv1=$(echo "$RSA_KEY" | ipfs cid format -v 1 --mc libp2p-key -b base36)
   RSA_IPNS_IDv1_DAGPB=$(echo "$RSA_IPNS_IDv0" | ipfs cid format -v 1 -b base36)
   test_check_peerid "${RSA_KEY}" &&
   ipfs name publish --key test_key_rsa --allow-offline -Q "/ipfs/$CIDv1" > name_publish_out &&
@@ -129,7 +129,7 @@ test_expect_success "Publish test text file to IPNS using ED25519 keys" '
   ED25519_KEY=$(ipfs key gen --ipns-base=b58mh --type=ed25519 test_key_ed25519 | head -n1 | tr -d "\n")
   ED25519_IPNS_IDv0=$ED25519_KEY
   ED25519_IPNS_IDv1=$(ipfs key list -l --ipns-base=base36 | grep test_key_ed25519 | cut -d " " -f1 | tr -d "\n")
-  ED25519_IPNS_IDv1_DAGPB=$(echo "$ED25519_IPNS_IDv1" | ipfs cid format -v 1 -b base36 --codec protobuf)
+  ED25519_IPNS_IDv1_DAGPB=$(echo "$ED25519_IPNS_IDv1" | ipfs cid format -v 1 -b base36 --mc dag-pb)
   test_check_peerid "${ED25519_KEY}" &&
   ipfs name publish --key test_key_ed25519 --allow-offline -Q "/ipfs/$CIDv1" > name_publish_out &&
   ipfs name resolve "$ED25519_KEY"  > output &&
@@ -141,7 +141,7 @@ test_expect_success "Publish test text file to IPNS using ED25519 keys" '
 test_expect_success 'start daemon with empty config for Gateway.PublicGateways' '
   test_kill_ipfs_daemon &&
   ipfs config --json Gateway.PublicGateways "{}" &&
-  test_launch_ipfs_daemon --offline
+  test_launch_ipfs_daemon_without_network
 '
 
 ## ============================================================================
@@ -268,7 +268,7 @@ test_expect_success "valid file and subdirectory paths in directory listing at {
 
 test_expect_success "valid parent directory path in directory listing at {cid}.ipfs.localhost/sub/dir" '
   curl -s --resolve $DIR_HOSTNAME:127.0.0.1 "http://$DIR_HOSTNAME/ipfs/ipns/" > list_response &&
-  test_should_contain "<a href=\"/ipfs/ipns/./..\">..</a>" list_response &&
+  test_should_contain "<a href=\"/ipfs/ipns/..\">..</a>" list_response &&
   test_should_contain "<a href=\"/ipfs/ipns/bar\">bar</a>" list_response
 '
 
@@ -324,6 +324,38 @@ test_localhost_gateway_response_should_contain \
   "Ref"
 
 ## ============================================================================
+## Test DNSLink inlining on HTTP gateways
+## ============================================================================
+
+# set explicit subdomain gateway config for the hostname
+ipfs config --json Gateway.PublicGateways '{
+  "localhost": {
+    "UseSubdomains": true,
+    "InlineDNSLink": true,
+    "Paths": ["/ipfs", "/ipns", "/api"]
+  },
+  "example.com": {
+    "UseSubdomains": true,
+    "InlineDNSLink": true,
+    "Paths": ["/ipfs", "/ipns", "/api"]
+  }
+}' || exit 1
+# restart daemon to apply config changes
+test_kill_ipfs_daemon
+test_launch_ipfs_daemon_without_network
+
+test_localhost_gateway_response_should_contain \
+  "request for localhost/ipns/{fqdn} redirects to DNSLink in subdomain with DNS inlining" \
+  "http://localhost:$GWAY_PORT/ipns/en.wikipedia-on-ipfs.org/wiki" \
+  "Location: http://en-wikipedia--on--ipfs-org.ipns.localhost:$GWAY_PORT/wiki"
+
+test_hostname_gateway_response_should_contain \
+  "request for example.com/ipns/{fqdn} redirects to DNSLink in subdomain with DNS inlining" \
+  "example.com" \
+  "http://127.0.0.1:$GWAY_PORT/ipns/en.wikipedia-on-ipfs.org/wiki" \
+  "Location: http://en-wikipedia--on--ipfs-org.ipns.example.com/wiki"
+
+## ============================================================================
 ## Test subdomain-based requests with a custom hostname config
 ## (origin per content root at http://*.example.com)
 ## ============================================================================
@@ -337,7 +369,7 @@ ipfs config --json Gateway.PublicGateways '{
 }' || exit 1
 # restart daemon to apply config changes
 test_kill_ipfs_daemon
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 
 # example.com/ip(f|n)s/*
@@ -441,7 +473,7 @@ test_expect_success "valid file and directory paths in directory listing at {cid
 
 test_expect_success "valid parent directory path in directory listing at {cid}.ipfs.example.com/sub/dir" '
   curl -s -H "Host: $DIR_FQDN" http://127.0.0.1:$GWAY_PORT/ipfs/ipns/ > list_response &&
-  test_should_contain "<a href=\"/ipfs/ipns/./..\">..</a>" list_response &&
+  test_should_contain "<a href=\"/ipfs/ipns/..\">..</a>" list_response &&
   test_should_contain "<a href=\"/ipfs/ipns/bar\">bar</a>" list_response
 '
 
@@ -519,7 +551,7 @@ ipfs config --json Gateway.PublicGateways '{
 }' || exit 1
 # restart daemon to apply config changes
 test_kill_ipfs_daemon
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 # not mounted at the root domain
 test_hostname_gateway_response_should_contain \
@@ -632,7 +664,7 @@ ipfs config --json Gateway.PublicGateways '{
 }' || exit 1
 # restart daemon to apply config changes
 test_kill_ipfs_daemon
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 # refuse requests to Paths that were not explicitly whitelisted for the hostname
 test_hostname_gateway_response_should_contain \
@@ -661,7 +693,7 @@ ipfs config --json Gateway.PublicGateways '{
 
 # restart daemon to apply config changes
 test_kill_ipfs_daemon
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 # example.com/ip(f|n)s/* smoke-tests
 # =============================================================================
@@ -834,7 +866,7 @@ ipfs config --json Gateway.PublicGateways '{
 }' || exit 1
 # restart daemon to apply config changes
 test_kill_ipfs_daemon
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 test_expect_success "request for http://fake.domain.com/ipfs/{CID} doesn't match the example.com gateway" "
   curl -H \"Host: fake.domain.com\" -sD - \"http://127.0.0.1:$GWAY_PORT/ipfs/$CIDv1\" > response &&
@@ -876,7 +908,7 @@ ipfs config --json Gateway.PublicGateways '{
 }' || exit 1
 # restart daemon to apply config changes
 test_kill_ipfs_daemon
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 # *.example1.com
 
@@ -945,7 +977,7 @@ ipfs config --json Gateway.PublicGateways '{
 
 # restart daemon to apply config changes
 test_kill_ipfs_daemon
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 test_localhost_gateway_response_should_contain \
   "request for localhost/ipfs/{CID} stays on path when subdomain gw is explicitly disabled" \

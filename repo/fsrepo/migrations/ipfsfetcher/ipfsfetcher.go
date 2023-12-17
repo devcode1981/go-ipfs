@@ -2,40 +2,40 @@ package ipfsfetcher
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"os"
 	"path"
 	"strings"
 	"sync"
 
-	"github.com/ipfs/go-ipfs-config"
 	files "github.com/ipfs/go-ipfs-files"
-	"github.com/ipfs/go-ipfs/core"
-	"github.com/ipfs/go-ipfs/core/coreapi"
-	"github.com/ipfs/go-ipfs/core/node/libp2p"
-	"github.com/ipfs/go-ipfs/repo/fsrepo"
-	"github.com/ipfs/go-ipfs/repo/fsrepo/migrations"
 	iface "github.com/ipfs/interface-go-ipfs-core"
 	"github.com/ipfs/interface-go-ipfs-core/options"
 	ipath "github.com/ipfs/interface-go-ipfs-core/path"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	"github.com/ipfs/kubo/config"
+	"github.com/ipfs/kubo/core"
+	"github.com/ipfs/kubo/core/coreapi"
+	"github.com/ipfs/kubo/core/node/libp2p"
+	"github.com/ipfs/kubo/repo/fsrepo"
+	"github.com/ipfs/kubo/repo/fsrepo/migrations"
+	peer "github.com/libp2p/go-libp2p/core/peer"
 )
 
 const (
 	// Default maximum download size
 	defaultFetchLimit = 1024 * 1024 * 512
 
-	tempNodeTcpAddr = "/ip4/127.0.0.1/tcp/0"
+	tempNodeTCPAddr = "/ip4/127.0.0.1/tcp/0"
 )
 
 type IpfsFetcher struct {
-	distPath  string
-	limit     int64
-	bootstrap []string
-	peers     []peer.AddrInfo
+	distPath       string
+	limit          int64
+	repoRoot       *string
+	userConfigFile string
 
 	openOnce  sync.Once
 	openErr   error
@@ -52,16 +52,22 @@ type IpfsFetcher struct {
 	addrInfo peer.AddrInfo
 }
 
+var _ migrations.Fetcher = (*IpfsFetcher)(nil)
+
 // NewIpfsFetcher creates a new IpfsFetcher
 //
 // Specifying "" for distPath sets the default IPNS path.
 // Specifying 0 for fetchLimit sets the default, -1 means no limit.
-func NewIpfsFetcher(distPath string, fetchLimit int64, bootstrap []string, peers []peer.AddrInfo) *IpfsFetcher {
+//
+// Bootstrap and peer information in read from the IPFS config file in
+// repoRoot, unless repoRoot is nil.  If repoRoot is empty (""), then read the
+// config from the default IPFS directory.
+func NewIpfsFetcher(distPath string, fetchLimit int64, repoRoot *string, userConfigFile string) *IpfsFetcher {
 	f := &IpfsFetcher{
-		limit:     defaultFetchLimit,
-		distPath:  migrations.LatestIpfsDist,
-		bootstrap: bootstrap,
-		peers:     peers,
+		limit:          defaultFetchLimit,
+		distPath:       migrations.LatestIpfsDist,
+		repoRoot:       repoRoot,
+		userConfigFile: userConfigFile,
 	}
 
 	if distPath != "" {
@@ -82,13 +88,13 @@ func NewIpfsFetcher(distPath string, fetchLimit int64, bootstrap []string, peers
 }
 
 // Fetch attempts to fetch the file at the given path, from the distribution
-// site configured for this HttpFetcher.  Returns io.ReadCloser on success,
-// which caller must close.
-func (f *IpfsFetcher) Fetch(ctx context.Context, filePath string) (io.ReadCloser, error) {
+// site configured for this HttpFetcher.
+func (f *IpfsFetcher) Fetch(ctx context.Context, filePath string) ([]byte, error) {
 	// Initialize and start IPFS node on first call to Fetch, since the fetcher
 	// may be created by not used.
 	f.openOnce.Do(func() {
-		f.ipfsTmpDir, f.openErr = initTempNode(ctx, f.bootstrap, f.peers)
+		bootstrap, peers := readIpfsConfig(f.repoRoot, f.userConfigFile)
+		f.ipfsTmpDir, f.openErr = initTempNode(ctx, bootstrap, peers)
 		if f.openErr != nil {
 			return
 		}
@@ -119,10 +125,15 @@ func (f *IpfsFetcher) Fetch(ctx context.Context, filePath string) (io.ReadCloser
 		return nil, fmt.Errorf("%q is not a file", filePath)
 	}
 
+	var rc io.ReadCloser
 	if f.limit != 0 {
-		return migrations.NewLimitReadCloser(fileNode, f.limit), nil
+		rc = migrations.NewLimitReadCloser(fileNode, f.limit)
+	} else {
+		rc = fileNode
 	}
-	return fileNode, nil
+	defer rc.Close()
+
+	return io.ReadAll(rc)
 }
 
 func (f *IpfsFetcher) Close() error {
@@ -159,7 +170,7 @@ func (f *IpfsFetcher) recordFetched(fetchedPath ipath.Path) {
 }
 
 func initTempNode(ctx context.Context, bootstrap []string, peers []peer.AddrInfo) (string, error) {
-	identity, err := config.CreateIdentity(ioutil.Discard, []options.KeyGenerateOption{
+	identity, err := config.CreateIdentity(io.Discard, []options.KeyGenerateOption{
 		options.Key.Type(options.Ed25519Key),
 	})
 	if err != nil {
@@ -171,7 +182,7 @@ func initTempNode(ctx context.Context, bootstrap []string, peers []peer.AddrInfo
 	}
 
 	// create temporary ipfs directory
-	dir, err := ioutil.TempDir("", "ipfs-temp")
+	dir, err := os.MkdirTemp("", "ipfs-temp")
 	if err != nil {
 		return "", fmt.Errorf("failed to get temp dir: %s", err)
 	}
@@ -182,7 +193,7 @@ func initTempNode(ctx context.Context, bootstrap []string, peers []peer.AddrInfo
 	// Disable listening for inbound connections
 	cfg.Addresses.Gateway = []string{}
 	cfg.Addresses.API = []string{}
-	cfg.Addresses.Swarm = []string{tempNodeTcpAddr}
+	cfg.Addresses.Swarm = []string{tempNodeTCPAddr}
 
 	if len(bootstrap) != 0 {
 		cfg.Bootstrap = bootstrap
@@ -235,8 +246,6 @@ func (f *IpfsFetcher) startTempNode(ctx context.Context) error {
 		cancel()
 		// Wait until ipfs is stopped
 		<-node.Context().Done()
-
-		fmt.Println("migration peer", node.Identity, "shutdown")
 	}
 
 	addrs, err := ipfs.Swarm().LocalAddrs(ctx)
@@ -276,4 +285,53 @@ func parsePath(fetchPath string) (ipath.Path, error) {
 		return nil, fmt.Errorf("%q is not an IPFS path", fetchPath)
 	}
 	return ipfsPath, ipfsPath.IsValid()
+}
+
+func readIpfsConfig(repoRoot *string, userConfigFile string) (bootstrap []string, peers []peer.AddrInfo) {
+	if repoRoot == nil {
+		return
+	}
+
+	cfgPath, err := config.Filename(*repoRoot, userConfigFile)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+
+	cfgFile, err := os.Open(cfgPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	defer cfgFile.Close()
+
+	// Attempt to read bootstrap addresses
+	var bootstrapCfg struct {
+		Bootstrap []string
+	}
+	err = json.NewDecoder(cfgFile).Decode(&bootstrapCfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot read bootstrap peers from config")
+	} else {
+		bootstrap = bootstrapCfg.Bootstrap
+	}
+
+	if _, err = cfgFile.Seek(0, 0); err != nil {
+		// If Seek fails, only log the error and continue on to try to read the
+		// peering config anyway as it might still be readable
+		fmt.Fprintln(os.Stderr, err)
+	}
+
+	// Attempt to read peers
+	var peeringCfg struct {
+		Peering config.Peering
+	}
+	err = json.NewDecoder(cfgFile).Decode(&peeringCfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot read peering from config")
+	} else {
+		peers = peeringCfg.Peering.Peers
+	}
+
+	return
 }

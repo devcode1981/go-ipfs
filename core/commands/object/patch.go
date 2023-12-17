@@ -5,13 +5,15 @@ import (
 	"io"
 
 	cmds "github.com/ipfs/go-ipfs-cmds"
-	"github.com/ipfs/go-ipfs/core/commands/cmdenv"
+	"github.com/ipfs/kubo/core/commands/cmdenv"
+	"github.com/ipfs/kubo/core/commands/cmdutils"
 
 	"github.com/ipfs/interface-go-ipfs-core/options"
 	"github.com/ipfs/interface-go-ipfs-core/path"
 )
 
 var ObjectPatchCmd = &cmds.Command{
+	Status: cmds.Deprecated, // https://github.com/ipfs/kubo/issues/7936
 	Helptext: cmds.HelpText{
 		Tagline: "Deprecated way to create a new merkledag object based on an existing one. Use MFS with 'files cp|rm' instead.",
 		ShortDescription: `
@@ -41,9 +43,13 @@ For modern use cases, use MFS with 'files' commands: 'ipfs files --help'.
 		"rm-link":     patchRmLinkCmd,
 		"set-data":    patchSetDataCmd,
 	},
+	Options: []cmds.Option{
+		cmdutils.AllowBigBlockOption,
+	},
 }
 
 var patchAppendDataCmd = &cmds.Command{
+	Status: cmds.Deprecated, // https://github.com/ipfs/kubo/issues/7936
 	Helptext: cmds.HelpText{
 		Tagline: "Deprecated way to append data to the data segment of a DAG node.",
 		ShortDescription: `
@@ -54,7 +60,7 @@ Example:
 	$ echo "hello" | ipfs object patch $HASH append-data
 
 NOTE: This does not append data to a file - it modifies the actual raw
-data within a dag-pb object. Blocks have a max size of 1MB and objects larger than
+data within a dag-pb object. Blocks have a max size of 1MiB and objects larger than
 the limit will not be respected by the network.
 
 DEPRECATED and provided for legacy reasons. Use 'ipfs add' or 'ipfs files' instead.
@@ -82,6 +88,10 @@ DEPRECATED and provided for legacy reasons. Use 'ipfs add' or 'ipfs files' inste
 			return err
 		}
 
+		if err := cmdutils.CheckCIDSize(req, p.Cid(), api.Dag()); err != nil {
+			return err
+		}
+
 		return cmds.EmitOnce(res, &Object{Hash: p.Cid().String()})
 	},
 	Type: &Object{},
@@ -94,6 +104,7 @@ DEPRECATED and provided for legacy reasons. Use 'ipfs add' or 'ipfs files' inste
 }
 
 var patchSetDataCmd = &cmds.Command{
+	Status: cmds.Deprecated, // https://github.com/ipfs/kubo/issues/7936
 	Helptext: cmds.HelpText{
 		Tagline: "Deprecated way to set the data field of dag-pb object.",
 		ShortDescription: `
@@ -128,6 +139,10 @@ DEPRECATED and provided for legacy reasons. Use 'files cp' and 'dag put' instead
 			return err
 		}
 
+		if err := cmdutils.CheckCIDSize(req, p.Cid(), api.Dag()); err != nil {
+			return err
+		}
+
 		return cmds.EmitOnce(res, &Object{Hash: p.Cid().String()})
 	},
 	Type: Object{},
@@ -140,6 +155,7 @@ DEPRECATED and provided for legacy reasons. Use 'files cp' and 'dag put' instead
 }
 
 var patchRmLinkCmd = &cmds.Command{
+	Status: cmds.Deprecated, // https://github.com/ipfs/kubo/issues/7936
 	Helptext: cmds.HelpText{
 		Tagline: "Deprecated way to remove a link from dag-pb object.",
 		ShortDescription: `
@@ -166,6 +182,10 @@ DEPRECATED and provided for legacy reasons. Use 'files rm' instead.
 			return err
 		}
 
+		if err := cmdutils.CheckCIDSize(req, p.Cid(), api.Dag()); err != nil {
+			return err
+		}
+
 		return cmds.EmitOnce(res, &Object{Hash: p.Cid().String()})
 	},
 	Type: Object{},
@@ -182,6 +202,7 @@ const (
 )
 
 var patchAddLinkCmd = &cmds.Command{
+	Status: cmds.Deprecated, // https://github.com/ipfs/kubo/issues/7936
 	Helptext: cmds.HelpText{
 		Tagline: "Deprecated way to add a link to a given dag-pb.",
 		ShortDescription: `
@@ -229,6 +250,10 @@ Use MFS and 'files' commands instead:
 		p, err := api.Object().AddLink(req.Context, root, name, child,
 			options.Object.Create(create))
 		if err != nil {
+			return err
+		}
+
+		if err := cmdutils.CheckCIDSize(req, p.Cid(), api.Dag()); err != nil {
 			return err
 		}
 

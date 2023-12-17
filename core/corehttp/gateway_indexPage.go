@@ -6,20 +6,21 @@ import (
 	"path"
 	"strings"
 
-	"github.com/ipfs/go-ipfs/assets"
 	ipfspath "github.com/ipfs/go-path"
+	"github.com/ipfs/kubo/assets"
 )
 
 // structs for directory listing
 type listingTemplateData struct {
-	GatewayURL  string
-	DNSLink     bool
-	Listing     []directoryItem
-	Size        string
-	Path        string
-	Breadcrumbs []breadcrumb
-	BackLink    string
-	Hash        string
+	GatewayURL            string
+	DNSLink               bool
+	Listing               []directoryItem
+	Size                  string
+	Path                  string
+	Breadcrumbs           []breadcrumb
+	BackLink              string
+	Hash                  string
+	FastDirIndexThreshold int
 }
 
 type directoryItem struct {
@@ -75,6 +76,9 @@ func breadcrumbs(urlPath string, dnslinkOrigin bool) []breadcrumb {
 }
 
 func shortHash(hash string) string {
+	if len(hash) <= 8 {
+		return hash
+	}
 	return (hash[0:4] + "\u2026" + hash[len(hash)-4:])
 }
 
@@ -91,7 +95,7 @@ func hasDNSLinkOrigin(gwURL string, path string) bool {
 var listingTemplate *template.Template
 
 func init() {
-	knownIconsBytes, err := assets.Asset("dir-index-html/knownIcons.txt")
+	knownIconsBytes, err := assets.Asset.ReadFile("dir-index-html/knownIcons.txt")
 	if err != nil {
 		panic(err)
 	}
@@ -113,12 +117,12 @@ func init() {
 
 	// custom template-escaping function to escape a full path, including '#' and '?'
 	urlEscape := func(rawUrl string) string {
-		pathUrl := url.URL{Path: rawUrl}
-		return pathUrl.String()
+		pathURL := url.URL{Path: rawUrl}
+		return pathURL.String()
 	}
 
 	// Directory listing template
-	dirIndexBytes, err := assets.Asset("dir-index-html/dir-index.html")
+	dirIndexBytes, err := assets.Asset.ReadFile("dir-index-html/dir-index.html")
 	if err != nil {
 		panic(err)
 	}

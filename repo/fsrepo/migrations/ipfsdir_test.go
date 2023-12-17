@@ -1,7 +1,6 @@
 package migrations
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,13 +12,7 @@ var (
 )
 
 func TestRepoDir(t *testing.T) {
-	var err error
-	fakeHome, err = ioutil.TempDir("", "testhome")
-	if err != nil {
-		panic(err)
-	}
-	defer os.RemoveAll(fakeHome)
-
+	fakeHome = t.TempDir()
 	os.Setenv("HOME", fakeHome)
 	fakeIpfs = filepath.Join(fakeHome, ".ipfs")
 
@@ -145,7 +138,7 @@ func testRepoVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	vFilePath := filepath.Join(ipfsDir, versionFile)
-	err = ioutil.WriteFile(vFilePath, []byte("bad-version-data\n"), 0644)
+	err = os.WriteFile(vFilePath, []byte("bad-version-data\n"), 0644)
 	if err != nil {
 		panic(err)
 	}
